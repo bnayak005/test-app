@@ -103,13 +103,42 @@ test-app/
 
 The application is an ES module project (`"type": "module"` in `package.json`) with a small separation of concerns:
 
-- `index.js` creates the readline interface, loads `data/questions.json` with `node:fs/promises`, displays the category and question-count menus, and controls the overall play-again loop.
+- `index.js` is the executable entry point. It creates the readline interface, loads `data/questions.json` with `node:fs/promises`, displays the category and question-count menus, creates a `Quiz`, and controls the play-again loop.
 - `src/input.js` wraps Node.js `readline` callbacks in Promises and provides reusable selection, confirmation, and pause prompts.
 - `src/quiz.js` contains the `Quiz` class. It copies and shuffles the selected questions with the Fisher–Yates algorithm, tracks progress and answers, evaluates responses, and renders results.
-- `src/colors.js` provides ANSI escape-code helpers for status messages, headings, feedback, and progress text.
+- `src/colors.js` provides ANSI escape-code helpers for status messages, headings, feedback, and progress text without a third-party color package.
 - `data/questions.json` is the content source. Each question stores its text, an array of options, a zero-based correct-answer index, and an optional explanation.
 
-At startup, the JSON file is resolved relative to `index.js`, so running the application from another working directory still uses the repository's bundled question data.
+At startup, the JSON file is resolved relative to `index.js`, so running the application from another working directory still uses the repository's bundled question data. The JSON is loaded once per application run, before the category menu is displayed.
+
+### Runtime flow
+
+1. `main()` creates a readline interface and calls `loadQuestions()`.
+2. Category IDs are obtained with `Object.keys(data.categories)`; the JSON insertion order determines the menu order.
+3. The selected category's question list is sliced to the requested count. The slice is then copied and shuffled by the `Quiz` constructor.
+4. `askQuestion()` displays the progress bar, calls `select()` for the answer, records the response, prints feedback and any explanation, and advances the question index.
+5. `showResults()` calculates the percentage, prints a performance message, and lists incorrect answers for review.
+6. `confirm()` determines whether another quiz starts. The readline interface is closed in `finally`, including after an error.
+
+### Exported code APIs
+
+The modules are application-oriented, but their exports are reusable:
+
+- `src/input.js`
+  - `createInterface()` returns a readline interface connected to standard input and output.
+  - `prompt(rl, question)` returns trimmed user input as a Promise.
+  - `select(rl, question, options)` prints numbered options and resolves to `{ index, value }`. It keeps prompting until the entered number is valid.
+  - `confirm(rl, question)` resolves to `true` only when the trimmed response starts with `y` or `Y`.
+  - `pressEnter(rl, message)` pauses until the user submits a line.
+- `src/quiz.js`
+  - `Quiz` accepts `(questions, categoryName)`.
+  - `currentQuestion`, `totalQuestions`, `isComplete`, and `progress` are computed getters.
+  - `askQuestion(rl)` handles one question and resolves to whether the answer was correct.
+  - `renderProgressBar()` returns a 30-character visual progress bar.
+  - `showResults()` prints the final score and incorrect-answer review.
+- `src/colors.js`
+  - `colorize(text, ...styles)` applies known ANSI styles and always appends the reset code.
+  - Convenience exports include `red`, `green`, `yellow`, `blue`, `cyan`, `magenta`, `bold`, `dim`, `success`, `error`, `warning`, `info`, and `highlight`.
 
 ## Question data format
 
@@ -124,9 +153,20 @@ Questions are grouped under a top-level `categories` object. A category has a di
 }
 ```
 
-`answer` is a zero-based index into `options`. For example, `answer: 0` selects the first option and `answer: 2` selects the third. When adding questions, keep this index aligned with the options array.
+Required properties used by the runtime are:
 
-The current data contains five questions in each of the three categories, so all three question-count choices are available for every category.
+- `categories`: object keyed by category ID.
+- `categories.<id>.name`: string shown in the category menu and results.
+- `categories.<id>.questions`: array of question objects.
+- `question`: string displayed to the player.
+- `options`: non-empty array of answer strings.
+- `answer`: zero-based integer index into `options`.
+
+`explanation` is optional; when present and truthy, it is displayed immediately after the answer feedback. The loader does not perform schema validation, so malformed JSON or mismatched indexes can cause runtime errors or incorrect results.
+
+`answer` is a zero-based index into `options`. For example, `answer: 0` selects the first option and `answer: 2` selects the third. When adding questions, keep this index aligned with the options array. The current data contains five questions in each of the three categories, so all three question-count choices are available for every category.
+
+When adding a category, add it under `categories`; it will automatically appear in the menu. When adding questions, remember that a three- or five-question selection uses the first three or five entries in that category before shuffling. The current implementation does not randomly sample from the entire category before selecting a subset.
 
 ## Available npm scripts
 
@@ -164,10 +204,30 @@ To change quiz content, edit [`data/questions.json`](data/questions.json). To ch
 
 The codebase uses built-in Node.js modules only, including `node:fs/promises`, `node:path`, `node:url`, and `node:readline`. It uses asynchronous functions and Promises for file loading and terminal input. No formatter, linter, bundler, Docker configuration, or CI/CD workflow is present.
 
-When making changes, preserve the question-data contract described above and verify the interactive flow manually with:
+### Adding or updating quiz content
+
+1. Edit [`data/questions.json`](data/questions.json).
+2. Keep every `answer` value within the corresponding `options` array.
+3. Ensure each category has at least one question; the menu always offers the all-questions option, while the three- and five-question options are conditional on category size.
+4. Run the application and manually exercise each changed category.
+
+### Making code changes
+
+- Keep the entry point's file-relative data loading intact so execution does not depend on the caller's current directory.
+- Preserve the Promise-based input flow; each readline prompt must resolve before the next one starts.
+- If changing terminal output, retain readable behavior when ANSI styling is unsupported or stripped by the terminal.
+- If changing question selection or scoring, verify both all-correct and incorrect-answer paths, including the review list.
+
+Verify the interactive flow manually with:
 
 ```bash
 npm start
+```
+
+Run the repository test command as a smoke check:
+
+```bash
+npm test
 ```
 
 ## License
